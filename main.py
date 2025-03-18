@@ -1,4 +1,4 @@
-# vault_qt.py - Modern Windows 11-style Vault application
+# siva.py - Black & Red Code-Themed Secure Storage Application
 
 import os
 import sys
@@ -12,9 +12,10 @@ from threading import Thread
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QFileDialog, QMessageBox, QFrame, QStackedWidget,
-                             QSizePolicy, QSpacerItem, QStyle, QToolBar, QMenu, QStatusBar)
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPalette, QFont, QAction
+                             QSizePolicy, QSpacerItem, QStyle, QToolBar, QMenu, QStatusBar,
+                             QToolButton)
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QPalette, QFont, QAction, QFontDatabase
 
 # Cryptography imports
 from cryptography.fernet import Fernet
@@ -29,29 +30,39 @@ import win32api
 import win32con
 import win32process
 
-# Style constants - Windows 11 style with purple accent
+# Style constants - SIVA theme (black & bright red)
 COLORS = {
-    "window_bg": "#202020",  # Dark grey for window background
-    "sidebar_bg": "#2d2d2d",  # Lighter grey for sidebar
-    "card_bg": "#333333",  # Card/panel background
-    "primary": "#a55eea",  # Purple primary
-    "primary_dark": "#8f44fd",  # Darker purple
-    "accent": "#b76efa",  # Light purple
+    "window_bg": "#080808",  # Almost black
+    "darker_bg": "#0a0a0a",  # Slightly lighter black
+    "card_bg": "#111111",  # Dark grey for elements
+    "primary": "#ff0000",  # Bright red
+    "primary_dark": "#cc0000",  # Darker red
+    "accent": "#ff3333",  # Lighter red
     "text_light": "#ffffff",  # White text
     "text_secondary": "#cccccc",  # Light grey text
-    "text_disabled": "#888888",  # Grey text
-    "border": "#444444",  # Border color
-    "success": "#0abb87",  # Green
-    "warning": "#ffb822",  # Orange/yellow
-    "error": "#ff5252",  # Red
+    "text_red": "#ff3333",  # Red text
+    "text_disabled": "#555555",  # Grey text
+    "border": "#222222",  # Border color
+    "success": "#00cc00",  # Green
+    "warning": "#ffcc00",  # Yellow
+    "error": "#ff0000",  # Red (same as primary)
+    "highlight": "#ff3333",  # Highlight color
 }
+
+# Code patterns for background elements (hex pattern)
+CODE_PATTERN = """
+010011010110100101100111011101000111100100100000
+001000000100010001100001011101000110000100100000
+010100110110010101100011011101010111001001100101
+0101001101001001010101100100000100100000
+"""
 
 # Stylesheet for the entire application
 STYLESHEET = f"""
 QWidget {{
     background-color: {COLORS['window_bg']};
     color: {COLORS['text_light']};
-    font-family: 'Segoe UI', 'MS Sans Serif';
+    font-family: 'Consolas', 'Courier New', monospace;
     font-size: 10pt;
 }}
 
@@ -64,87 +75,118 @@ QLabel {{
 }}
 
 QLabel#titleLabel {{
-    font-size: 24pt;
+    font-size: 22pt;
     font-weight: bold;
-    color: {COLORS['text_light']};
+    color: {COLORS['primary']};
+    font-family: 'Consolas', 'Courier New', monospace;
 }}
 
 QLabel#subtitleLabel {{
-    font-size: 12pt;
+    font-size: 11pt;
     color: {COLORS['text_secondary']};
+    font-family: 'Consolas', 'Courier New', monospace;
+}}
+
+QLabel#codePatternLabel {{
+    color: {COLORS['text_red']};
+    opacity: 0.1;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 8pt;
 }}
 
 QLineEdit {{
     background-color: {COLORS['card_bg']};
     color: {COLORS['text_light']};
-    border: 1px solid {COLORS['border']};
-    border-radius: 4px;
+    border: 1px solid {COLORS['primary']};
+    border-radius: 2px;
     padding: 8px;
     selection-background-color: {COLORS['primary']};
+    font-family: 'Consolas', 'Courier New', monospace;
 }}
 
 QPushButton {{
-    background-color: {COLORS['primary']};
-    color: {COLORS['text_light']};
-    border: none;
-    border-radius: 4px;
+    background-color: {COLORS['card_bg']};
+    color: {COLORS['primary']};
+    border: 1px solid {COLORS['primary']};
+    border-radius: 2px;
     padding: 8px 16px;
     font-weight: bold;
     min-height: 36px;
+    outline: none;
+    font-family: 'Consolas', 'Courier New', monospace;
 }}
 
 QPushButton:hover {{
-    background-color: {COLORS['primary_dark']};
+    background-color: {COLORS['primary']};
+    color: {COLORS['window_bg']};
 }}
 
 QPushButton:pressed {{
-    background-color: {COLORS['accent']};
+    background-color: {COLORS['primary_dark']};
+    color: {COLORS['window_bg']};
+}}
+
+QPushButton:focus {{
+    outline: none;
 }}
 
 QPushButton:disabled {{
     background-color: {COLORS['card_bg']};
     color: {COLORS['text_disabled']};
+    border: 1px solid {COLORS['text_disabled']};
 }}
 
 QPushButton#successButton {{
-    background-color: {COLORS['success']};
+    border: 1px solid {COLORS['success']};
+    color: {COLORS['success']};
 }}
 
 QPushButton#successButton:hover {{
-    background-color: #09a478;
+    background-color: {COLORS['success']};
+    color: {COLORS['window_bg']};
 }}
 
 QPushButton#warningButton {{
-    background-color: {COLORS['warning']};
+    border: 1px solid {COLORS['warning']};
+    color: {COLORS['warning']};
 }}
 
 QPushButton#warningButton:hover {{
-    background-color: #f0ad2c;
+    background-color: {COLORS['warning']};
+    color: {COLORS['window_bg']};
 }}
 
 QPushButton#dangerButton {{
-    background-color: {COLORS['error']};
+    border: 1px solid {COLORS['error']};
+    color: {COLORS['error']};
 }}
 
 QPushButton#dangerButton:hover {{
-    background-color: #e04343;
+    background-color: {COLORS['error']};
+    color: {COLORS['window_bg']};
 }}
 
 QTableWidget {{
     background-color: {COLORS['card_bg']};
-    alternate-background-color: {COLORS['sidebar_bg']};
+    alternate-background-color: {COLORS['darker_bg']};
     border: 1px solid {COLORS['border']};
-    border-radius: 4px;
-    selection-background-color: {COLORS['primary']};
-    selection-color: {COLORS['text_light']};
+    border-radius: 2px;
+    color: {COLORS['text_light']};
     gridline-color: {COLORS['border']};
+    outline: none;
+}}
+
+QTableWidget::item:selected {{
+    background-color: {COLORS['primary']};
+    color: {COLORS['window_bg']};
 }}
 
 QHeaderView::section {{
-    background-color: {COLORS['sidebar_bg']};
-    color: {COLORS['text_light']};
+    background-color: {COLORS['darker_bg']};
+    color: {COLORS['primary']};
     border: 1px solid {COLORS['border']};
     padding: 6px;
+    font-weight: bold;
 }}
 
 QTableWidget::item {{
@@ -152,20 +194,20 @@ QTableWidget::item {{
 }}
 
 QToolBar {{
-    background-color: {COLORS['sidebar_bg']};
-    border-bottom: 1px solid {COLORS['border']};
+    background-color: {COLORS['darker_bg']};
+    border-bottom: 1px solid {COLORS['primary']};
     spacing: 10px;
 }}
 
 QStatusBar {{
-    background-color: {COLORS['sidebar_bg']};
+    background-color: {COLORS['darker_bg']};
     color: {COLORS['text_secondary']};
-    border-top: 1px solid {COLORS['border']};
+    border-top: 1px solid {COLORS['primary']};
 }}
 
 QMenu {{
     background-color: {COLORS['card_bg']};
-    border: 1px solid {COLORS['border']};
+    border: 1px solid {COLORS['primary']};
 }}
 
 QMenu::item {{
@@ -174,6 +216,61 @@ QMenu::item {{
 
 QMenu::item:selected {{
     background-color: {COLORS['primary']};
+    color: {COLORS['window_bg']};
+}}
+
+QToolButton {{
+    background-color: transparent;
+    border: none;
+    border-radius: 2px;
+    padding: 5px;
+    color: {COLORS['primary']};
+}}
+
+QToolButton:hover {{
+    background-color: rgba(255, 0, 0, 0.2);
+}}
+
+QToolButton:pressed {{
+    background-color: rgba(255, 0, 0, 0.3);
+}}
+
+QToolButton::menu-indicator {{
+    image: none;
+}}
+
+QScrollBar:vertical {{
+    border: none;
+    background-color: {COLORS['darker_bg']};
+    width: 10px;
+    margin: 0px;
+}}
+
+QScrollBar::handle:vertical {{
+    background-color: {COLORS['primary']};
+    min-height: 20px;
+    border-radius: 5px;
+}}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+
+QScrollBar:horizontal {{
+    border: none;
+    background-color: {COLORS['darker_bg']};
+    height: 10px;
+    margin: 0px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background-color: {COLORS['primary']};
+    min-width: 20px;
+    border-radius: 5px;
+}}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
 }}
 """
 
@@ -182,7 +279,7 @@ class SecureFileSystem:
     """Handles the encryption and decryption of files"""
 
     def __init__(self, master_password):
-        self.salt = b'VaultSecureSalt_456'  # Fixed salt for key derivation
+        self.salt = b'SIVASecureSalt_X09'  # Fixed salt for key derivation
         self.master_password = master_password
         self.cipher = self._generate_cipher()
 
@@ -199,9 +296,9 @@ class SecureFileSystem:
         return Fernet(key)
 
     def encrypt_file(self, source_path, dest_path=None):
-        """Encrypt a file and save it with .vault extension"""
+        """Encrypt a file and save it with .siva extension"""
         if dest_path is None:
-            dest_path = str(source_path) + '.vault'
+            dest_path = str(source_path) + '.siva'
 
         try:
             with open(source_path, 'rb') as file:
@@ -226,7 +323,7 @@ class SecureFileSystem:
             return None
 
     def decrypt_file(self, encrypted_path, output_dir=None):
-        """Decrypt a .vault file and restore the original file"""
+        """Decrypt a .siva file and restore the original file"""
         try:
             with open(encrypted_path, 'rb') as file:
                 encrypted_data = file.read()
@@ -271,6 +368,18 @@ class KeyboardWatcher(QThread):
         self.triggered.emit()
 
 
+class CodePatternLabel(QLabel):
+    """Creates a background label with code-like pattern"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("codePatternLabel")
+        self.setText(CODE_PATTERN)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Make semi-transparent
+        self.setStyleSheet(f"color: rgba(255, 0, 0, 0.1); font-size: 8pt;")
+
+
 class LoginScreen(QWidget):
     """Login screen widget"""
     login_successful = pyqtSignal(str)  # Signal to emit the password on success
@@ -285,6 +394,10 @@ class LoginScreen(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Background code pattern
+        self.code_pattern = CodePatternLabel(self)
+        self.code_pattern.setStyleSheet("color: rgba(255, 0, 0, 0.07); font-size: 10pt;")
+
         # Content container with padding
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -296,25 +409,26 @@ class LoginScreen(QWidget):
         main_layout.addWidget(content, alignment=Qt.AlignmentFlag.AlignCenter)
         main_layout.addStretch(1)
 
-        # App logo/icon
-        logo_layout = QHBoxLayout()
-        logo_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Logo (if exists)
+        if os.path.exists("SIVA.png"):
+            logo_layout = QHBoxLayout()
+            logo_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        logo_label = QLabel()
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        logo_label.setPixmap(pixmap)
-        logo_label.setFixedSize(80, 80)
-        logo_layout.addWidget(logo_label)
-        content_layout.addLayout(logo_layout)
+            logo_label = QLabel()
+            pixmap = QPixmap("SIVA.png").scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(pixmap)
+            logo_label.setFixedSize(80, 80)
+            logo_layout.addWidget(logo_label)
+            content_layout.addLayout(logo_layout)
 
         # Title and subtitle
-        title_label = QLabel("Vault")
+        title_label = QLabel("S I V A")
         title_label.setObjectName("titleLabel")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_layout.addWidget(title_label)
 
-        subtitle_label = QLabel("Secure File Storage")
+        subtitle_label = QLabel("> SECURE INFORMATION VAULT ACCESS")
         subtitle_label.setObjectName("subtitleLabel")
         subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_layout.addWidget(subtitle_label)
@@ -324,7 +438,7 @@ class LoginScreen(QWidget):
 
         # Password field
         password_layout = QVBoxLayout()
-        password_label = QLabel("Password")
+        password_label = QLabel("> ENTER AUTHORIZATION KEY:")
         password_layout.addWidget(password_label)
 
         self.password_field = QLineEdit()
@@ -338,7 +452,7 @@ class LoginScreen(QWidget):
         content_layout.addSpacing(10)
 
         # Login button
-        button_text = "Create Vault" if self.is_new_vault else "Login"
+        button_text = "INITIALIZE" if self.is_new_vault else "ACCESS"
         self.login_button = QPushButton(button_text)
         self.login_button.setMinimumHeight(40)
         self.login_button.clicked.connect(self.handle_login)
@@ -351,8 +465,8 @@ class LoginScreen(QWidget):
         content_layout.addWidget(self.status_label)
 
         # Hotkey info
-        key_info = QLabel("Press Ctrl+Alt+V to open Vault")
-        key_info.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 9pt;")
+        key_info = QLabel("PRESS CTRL+ALT+V TO INITIATE SIVA PROTOCOL")
+        key_info.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 8pt;")
         key_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_layout.addWidget(key_info)
 
@@ -363,7 +477,7 @@ class LoginScreen(QWidget):
         password = self.password_field.text()
 
         if not password:
-            self.status_label.setText("Password cannot be empty")
+            self.status_label.setText("ERROR: AUTHORIZATION KEY REQUIRED")
             return
 
         # Signal that login/creation was successful, pass password to parent
@@ -374,6 +488,11 @@ class LoginScreen(QWidget):
         color = COLORS['error'] if is_error else COLORS['success']
         self.status_label.setStyleSheet(f"color: {color};")
         self.status_label.setText(message)
+
+    def resizeEvent(self, event):
+        """Make the code pattern background resize with the widget"""
+        super().resizeEvent(event)
+        self.code_pattern.setGeometry(self.rect())
 
 
 class MainScreen(QWidget):
@@ -393,34 +512,43 @@ class MainScreen(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # Background code pattern
+        self.code_pattern = CodePatternLabel(self)
+        self.code_pattern.setGeometry(self.rect())
+
         # Toolbar
         toolbar = QToolBar()
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(18, 18))
 
+        # Logo in toolbar if exists
+        if os.path.exists("SIVA.png"):
+            logo_label = QLabel()
+            pixmap = QPixmap("SIVA.png").scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(pixmap)
+            logo_label.setContentsMargins(5, 0, 5, 0)
+            toolbar.addWidget(logo_label)
+
         # App title in toolbar
-        title_label = QLabel("Vault")
+        title_label = QLabel("SIVA")
         title_label.setObjectName("titleLabel")
         title_label.setContentsMargins(10, 0, 20, 0)
         toolbar.addWidget(title_label)
 
-        # Add spacer to push logout button to the right
+        # Add spacer to push menu button to the right
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Minimize button
-        minimize_btn = QPushButton("Minimize")
-        minimize_btn.setFixedWidth(100)
-        minimize_btn.clicked.connect(self.minimize)
-        toolbar.addWidget(minimize_btn)
-
-        # Logout button
-        logout_btn = QPushButton("Logout")
-        logout_btn.setFixedWidth(100)
-        logout_btn.setObjectName("dangerButton")
-        logout_btn.clicked.connect(self.logout)
-        toolbar.addWidget(logout_btn)
+        # Menu button
+        self.menu_button = QToolButton()
+        self.menu_button.setText("≡")  # More terminal-like hamburger menu
+        self.menu_button.setFont(QFont("Consolas", 12))
+        self.menu_button.setFixedSize(40, 40)
+        self.menu_button.setStyleSheet(f"color: {COLORS['primary']};")
+        self.menu_button.clicked.connect(self.show_menu)
+        toolbar.addWidget(self.menu_button)
 
         main_layout.addWidget(toolbar)
 
@@ -429,20 +557,25 @@ class MainScreen(QWidget):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(20, 20, 20, 20)
 
+        # Console header
+        console_header = QLabel("> SECURE FILE SYSTEM ACTIVE")
+        console_header.setStyleSheet(f"color: {COLORS['primary']}; font-weight: bold;")
+        content_layout.addWidget(console_header)
+
         # Action buttons
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
 
-        add_btn = QPushButton("Add Files")
+        add_btn = QPushButton("[ADD FILES]")
         add_btn.setObjectName("successButton")
         add_btn.clicked.connect(self.add_files)
         button_layout.addWidget(add_btn)
 
-        extract_btn = QPushButton("Extract Files")
+        extract_btn = QPushButton("[EXTRACT]")
         extract_btn.clicked.connect(self.extract_files)
         button_layout.addWidget(extract_btn)
 
-        delete_btn = QPushButton("Delete Selected")
+        delete_btn = QPushButton("[DELETE]")
         delete_btn.setObjectName("dangerButton")
         delete_btn.clicked.connect(self.delete_files)
         button_layout.addWidget(delete_btn)
@@ -450,10 +583,15 @@ class MainScreen(QWidget):
         button_layout.addStretch()
         content_layout.addLayout(button_layout)
 
+        # Files table with header
+        table_header = QLabel("> INFECTED FILES:")
+        table_header.setStyleSheet(f"color: {COLORS['primary']}; font-weight: bold; margin-top: 10px;")
+        content_layout.addWidget(table_header)
+
         # Files table
         self.files_table = QTableWidget()
         self.files_table.setColumnCount(3)
-        self.files_table.setHorizontalHeaderLabels(["Filename", "Size", "Date Added"])
+        self.files_table.setHorizontalHeaderLabels(["FILENAME", "SIZE", "DATE CONSUMED"])
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -468,20 +606,53 @@ class MainScreen(QWidget):
         # Status bar
         self.status_bar = QStatusBar()
         self.status_bar.setSizeGripEnabled(False)
-        self.status_bar.showMessage("Vault ready")
+        self.status_bar.showMessage("SIVA PROTOCOL ACTIVE")
         main_layout.addWidget(self.status_bar)
+
+    def resizeEvent(self, event):
+        """Make the code pattern background resize with the widget"""
+        super().resizeEvent(event)
+        self.code_pattern.setGeometry(self.rect())
+
+    def show_menu(self):
+        """Show the hamburger menu"""
+        menu = QMenu(self)
+
+        # Settings action
+        settings_action = QAction("SETTINGS", self)
+        settings_action.triggered.connect(self.show_settings)
+        menu.addAction(settings_action)
+
+        menu.addSeparator()
+
+        # Logout action
+        logout_action = QAction("DEACTIVATE", self)
+        logout_action.triggered.connect(self.logout)
+        menu.addAction(logout_action)
+
+        # Exit action
+        exit_action = QAction("TERMINATE", self)
+        exit_action.triggered.connect(QApplication.instance().quit)
+        menu.addAction(exit_action)
+
+        # Show the menu at button position
+        menu.exec(self.menu_button.mapToGlobal(QPoint(0, self.menu_button.height())))
+
+    def show_settings(self):
+        """Show settings dialog"""
+        QMessageBox.information(self, "SIVA SETTINGS", "Protocol configuration coming soon.")
 
     def load_secured_files(self):
         """Load and display secured files in the table"""
         self.files_table.setRowCount(0)  # Clear existing items
 
-        # Find all .vault files in the hidden folder
+        # Find all .siva files in the hidden folder
         try:
             vault_path = Path(self.vault_path)
-            secure_files = list(vault_path.glob("*.vault"))
+            secure_files = list(vault_path.glob("*.siva"))
 
             if not secure_files:
-                self.status_bar.showMessage("No secured files found")
+                self.status_bar.showMessage("NO INFECTED FILES DETECTED")
                 return
 
             for i, file_path in enumerate(secure_files):
@@ -499,8 +670,8 @@ class MainScreen(QWidget):
                 # Format date
                 date_display = datetime.datetime.fromtimestamp(stats.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
 
-                # Extract original filename (without the path and .vault extension)
-                filename = file_path.name.replace(".vault", "")
+                # Extract original filename (without the path and .siva extension)
+                filename = file_path.name.replace(".siva", "")
 
                 # Add to table
                 row_position = self.files_table.rowCount()
@@ -509,13 +680,13 @@ class MainScreen(QWidget):
                 self.files_table.setItem(row_position, 1, QTableWidgetItem(size_display))
                 self.files_table.setItem(row_position, 2, QTableWidgetItem(date_display))
 
-            self.status_bar.showMessage(f"{len(secure_files)} secured file(s) found")
+            self.status_bar.showMessage(f"INVENTORY: {len(secure_files)} INFECTED FILE(S)")
         except Exception as e:
-            self.status_bar.showMessage(f"Error loading files: {e}")
+            self.status_bar.showMessage(f"ERROR SCANNING FILES: {e}")
 
     def add_files(self):
         """Select and add files to the secure vault"""
-        filepaths, _ = QFileDialog.getOpenFileNames(self, "Select files to secure")
+        filepaths, _ = QFileDialog.getOpenFileNames(self, "SELECT FILES TO INFECT")
 
         if not filepaths:
             return
@@ -524,7 +695,7 @@ class MainScreen(QWidget):
         for filepath in filepaths:
             # Generate destination path in the hidden folder
             filename = os.path.basename(filepath)
-            dest_path = os.path.join(self.vault_path, f"{filename}.vault")
+            dest_path = os.path.join(self.vault_path, f"{filename}.siva")
 
             # Encrypt and save the file
             if self.filesystem.encrypt_file(filepath, dest_path):
@@ -534,20 +705,20 @@ class MainScreen(QWidget):
         self.load_secured_files()
 
         if successful:
-            self.status_bar.showMessage(f"Successfully secured {successful} of {len(filepaths)} file(s)")
+            self.status_bar.showMessage(f"SUCCESSFULLY INFECTED {successful} OF {len(filepaths)} FILE(S)")
         else:
-            self.status_bar.showMessage("Failed to secure any files")
+            self.status_bar.showMessage("FAILED TO INFECT ANY FILES")
 
     def extract_files(self):
         """Extract selected files from the vault"""
         selected_rows = set(item.row() for item in self.files_table.selectedItems())
 
         if not selected_rows:
-            QMessageBox.information(self, "Selection Required", "Please select files to extract")
+            QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES TO EXTRACT")
             return
 
         # Ask for extraction directory
-        output_dir = QFileDialog.getExistingDirectory(self, "Select output directory")
+        output_dir = QFileDialog.getExistingDirectory(self, "SELECT OUTPUT DIRECTORY")
 
         if not output_dir:
             return
@@ -555,29 +726,29 @@ class MainScreen(QWidget):
         successful = 0
         for row in selected_rows:
             filename = self.files_table.item(row, 0).text()
-            encrypted_path = os.path.join(self.vault_path, f"{filename}.vault")
+            encrypted_path = os.path.join(self.vault_path, f"{filename}.siva")
 
             if self.filesystem.decrypt_file(encrypted_path, output_dir):
                 successful += 1
 
         if successful:
-            self.status_bar.showMessage(f"Successfully extracted {successful} of {len(selected_rows)} file(s)")
-            QMessageBox.information(self, "Extraction Complete",
-                                    f"Successfully extracted {successful} file(s) to {output_dir}")
+            self.status_bar.showMessage(f"SUCCESSFULLY EXTRACTED {successful} OF {len(selected_rows)} FILE(S)")
+            QMessageBox.information(self, "EXTRACTION COMPLETE",
+                                    f"SUCCESSFULLY EXTRACTED {successful} FILE(S) TO SELECTED DIRECTORY")
         else:
-            self.status_bar.showMessage("Failed to extract any files")
+            self.status_bar.showMessage("FAILED TO EXTRACT ANY FILES")
 
     def delete_files(self):
         """Delete selected secured files"""
         selected_rows = set(item.row() for item in self.files_table.selectedItems())
 
         if not selected_rows:
-            QMessageBox.information(self, "Selection Required", "Please select files to delete")
+            QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES TO DELETE")
             return
 
         confirm = QMessageBox.question(
-            self, "Confirm Deletion",
-            f"Are you sure you want to delete {len(selected_rows)} file(s)? This cannot be undone.",
+            self, "CONFIRM DELETION",
+            f"ARE YOU SURE YOU WANT TO DELETE {len(selected_rows)} FILE(S)?\nTHIS ACTION CANNOT BE UNDONE.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -588,7 +759,7 @@ class MainScreen(QWidget):
         deleted = 0
         for row in selected_rows:
             filename = self.files_table.item(row, 0).text()
-            file_path = os.path.join(self.vault_path, f"{filename}.vault")
+            file_path = os.path.join(self.vault_path, f"{filename}.siva")
 
             try:
                 os.remove(file_path)
@@ -599,31 +770,34 @@ class MainScreen(QWidget):
         # Refresh the file list
         self.load_secured_files()
 
-        self.status_bar.showMessage(f"Deleted {deleted} of {len(selected_rows)} file(s)")
-
-    def minimize(self):
-        """Minimize the application window"""
-        self.parent().hide()
+        self.status_bar.showMessage(f"PURGED {deleted} OF {len(selected_rows)} FILE(S)")
 
     def logout(self):
         """Log out of the vault"""
         self.logout_requested.emit()
 
 
-class VaultApplication(QMainWindow):
+class SivaApplication(QMainWindow):
     """Main application window"""
 
     def __init__(self):
         super().__init__()
 
         # Set up window properties
-        self.setWindowTitle("Vault")
+        self.setWindowTitle("SIVA")
         self.setMinimumSize(900, 600)
+
+        # Set window icon
+        icon_path = "SIVA.png"
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            print(f"Warning: Icon file {icon_path} not found")
 
         # Set up paths
         documents_path = Path.home() / "Documents"
-        self.vault_path = str(documents_path / ".vault_data")
-        self.config_path = os.path.join(self.vault_path, ".vault_config")
+        self.vault_path = str(documents_path / ".siva_data")
+        self.config_path = os.path.join(self.vault_path, ".siva_config")
 
         # Ensure the vault folder exists
         self.ensure_vault_folder_exists()
@@ -651,6 +825,11 @@ class VaultApplication(QMainWindow):
 
         # Initially hide the application
         self.hide()
+
+    def closeEvent(self, event):
+        """Override close event to hide instead of close"""
+        event.ignore()  # Ignore the close event
+        self.hide()  # Hide the window instead
 
     def show_application(self):
         """Show and activate the application window"""
@@ -711,14 +890,14 @@ class VaultApplication(QMainWindow):
             if self.password_hash:
                 self.show_main_screen(password)
             else:
-                self.login_screen.set_status("Error creating vault")
+                self.login_screen.set_status("ERROR: SYSTEM INITIALIZATION FAILED")
         else:
             # Verify password
             entered_hash = hashlib.sha256(password.encode()).hexdigest()
             if entered_hash == self.password_hash:
                 self.show_main_screen(password)
             else:
-                self.login_screen.set_status("Incorrect password")
+                self.login_screen.set_status("ERROR: INVALID AUTHORIZATION KEY")
 
     def show_main_screen(self, password):
         """Show the main application screen"""
@@ -763,7 +942,7 @@ class VaultApplication(QMainWindow):
                 # Add our program to startup
                 winreg.SetValueEx(
                     key,
-                    "Vault",
+                    "SIVA",
                     0,
                     winreg.REG_SZ,
                     exe_path
@@ -786,10 +965,15 @@ class VaultApplication(QMainWindow):
 def main():
     # Create application
     app = QApplication(sys.argv)
+
+    # Add monospace font
+    QFontDatabase.addApplicationFont("consolas.ttf")  # Optional: add your font if needed
+
+    # Apply stylesheet
     app.setStyleSheet(STYLESHEET)
 
-    # Create main window
-    window = VaultApplication()
+    # Create main window with renamed class
+    window = SivaApplication()
 
     # Hide the process
     window.hide_process()
