@@ -1,21 +1,27 @@
-# siva.py - Black & Red Code-Themed Secure Storage Application
+# siva.py - Enhanced Black & Red Code-Themed Secure Storage Application
 
 import os
 import sys
 import base64
 import hashlib
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 import datetime
 from threading import Thread
+import mimetypes
 
 # Qt imports
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QFileDialog, QMessageBox, QFrame, QStackedWidget,
                              QSizePolicy, QSpacerItem, QStyle, QToolBar, QMenu, QStatusBar,
-                             QToolButton)
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QPoint
-from PyQt6.QtGui import QIcon, QPixmap, QColor, QPalette, QFont, QAction, QFontDatabase
+                             QToolButton, QInputDialog, QTreeView, QSplitter, QDialog, QFormLayout,
+                             QComboBox)
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QPoint, QDir, QSettings
+from PyQt6.QtGui import QIcon, QPixmap, QColor, QPalette, QFont, QAction, QFontDatabase, QStandardItemModel, \
+    QStandardItem
 
 # Cryptography imports
 from cryptography.fernet import Fernet
@@ -29,6 +35,9 @@ import winreg
 import win32api
 import win32con
 import win32process
+
+# Initialize mimetypes
+mimetypes.init()
 
 # Style constants - SIVA theme (black & bright red)
 COLORS = {
@@ -239,6 +248,70 @@ QToolButton::menu-indicator {{
     image: none;
 }}
 
+QSplitter::handle {{
+    background-color: {COLORS['primary']};
+    height: 1px;
+}}
+
+QTreeView {{
+    background-color: {COLORS['card_bg']};
+    alternate-background-color: {COLORS['darker_bg']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 2px;
+    color: {COLORS['text_light']};
+    outline: none;
+}}
+
+QTreeView::item {{
+    padding: 6px;
+}}
+
+QTreeView::item:selected {{
+    background-color: {COLORS['primary']};
+    color: {COLORS['window_bg']};
+}}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {{
+    border-image: none;
+    image: url(:/icons/branch-closed.png);
+}}
+
+QTreeView::branch:open:has-children:!has-siblings,
+QTreeView::branch:open:has-children:has-siblings {{
+    border-image: none;
+    image: url(:/icons/branch-open.png);
+}}
+
+QComboBox {{
+    background-color: {COLORS['card_bg']};
+    color: {COLORS['text_light']};
+    border: 1px solid {COLORS['primary']};
+    border-radius: 2px;
+    padding: 5px;
+    min-height: 28px;
+}}
+
+QComboBox:hover {{
+    border: 1px solid {COLORS['accent']};
+}}
+
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid {COLORS['border']};
+    border-top-right-radius: 2px;
+    border-bottom-right-radius: 2px;
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {COLORS['card_bg']};
+    border: 1px solid {COLORS['primary']};
+    selection-background-color: {COLORS['primary']};
+    selection-color: {COLORS['window_bg']};
+}}
+
 QScrollBar:vertical {{
     border: none;
     background-color: {COLORS['darker_bg']};
@@ -272,7 +345,70 @@ QScrollBar::handle:horizontal {{
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;
 }}
+
+QDialog {{
+    border: 1px solid {COLORS['primary']};
+}}
+
+QDialog QPushButton {{
+    min-width: 100px;
+}}
 """
+
+
+class TempFileManager:
+    """Manages temporary files opened from the vault"""
+
+    def __init__(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="siva_")
+        self.opened_files = {}  # Map of original file paths to temp file paths
+        self.processes = {}  # Track processes used to open files
+
+    def get_temp_path(self, original_path):
+        """Get a temporary path for a file"""
+        filename = os.path.basename(original_path)
+        temp_path = os.path.join(self.temp_dir, filename)
+        return temp_path
+
+    def track_file(self, original_path, temp_path):
+        """Track an opened file"""
+        self.opened_files[original_path] = temp_path
+
+    def open_file(self, path):
+        """Open a file with the default application"""
+        try:
+            if sys.platform == 'win32':
+                os.startfile(path)
+                # No easy way to track this process on Windows
+            else:
+                # For Unix-like systems
+                process = subprocess.Popen(['xdg-open', path])
+                self.processes[path] = process
+            return True
+        except Exception as e:
+            print(f"Error opening file: {e}")
+            return False
+
+    def close_all(self):
+        """Close all opened files and clean up temporary directory"""
+        # Try to close any processes we're tracking
+        for path, process in self.processes.items():
+            try:
+                process.terminate()
+            except:
+                pass
+
+        # Clear tracking dictionaries
+        self.processes.clear()
+        self.opened_files.clear()
+
+        # Remove temporary directory and its contents
+        try:
+            shutil.rmtree(self.temp_dir)
+            # Create a new temp directory for future use
+            self.temp_dir = tempfile.mkdtemp(prefix="siva_")
+        except Exception as e:
+            print(f"Error cleaning up temp files: {e}")
 
 
 class SecureFileSystem:
@@ -304,15 +440,23 @@ class SecureFileSystem:
             with open(source_path, 'rb') as file:
                 file_data = file.read()
 
-            # Store filename in the encrypted data
+            # Store filename and file type in the encrypted data
             filename = os.path.basename(source_path).encode()
             filename_len = len(filename).to_bytes(4, byteorder='big')
 
-            # Prepare data: [4 bytes filename length][filename bytes][file data]
-            data_to_encrypt = filename_len + filename + file_data
+            # Get and store file type/extension
+            _, file_ext = os.path.splitext(source_path)
+            file_ext = file_ext.encode()
+            ext_len = len(file_ext).to_bytes(4, byteorder='big')
+
+            # Prepare data: [filename length][filename][extension length][extension][file data]
+            data_to_encrypt = filename_len + filename + ext_len + file_ext + file_data
 
             # Encrypt the data
             encrypted_data = self.cipher.encrypt(data_to_encrypt)
+
+            # Create parent directories if they don't exist
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
             with open(dest_path, 'wb') as file:
                 file.write(encrypted_data)
@@ -322,7 +466,7 @@ class SecureFileSystem:
             print(f"Encryption error: {e}")
             return None
 
-    def decrypt_file(self, encrypted_path, output_dir=None):
+    def decrypt_file(self, encrypted_path, output_dir=None, temp=False):
         """Decrypt a .siva file and restore the original file"""
         try:
             with open(encrypted_path, 'rb') as file:
@@ -337,8 +481,18 @@ class SecureFileSystem:
             # Extract filename
             filename = decrypted_data[4:4 + filename_len].decode()
 
+            # Extract extension length
+            ext_pos = 4 + filename_len
+            ext_len = int.from_bytes(decrypted_data[ext_pos:ext_pos + 4], byteorder='big')
+
+            # Extract extension (could be empty)
+            file_ext = ""
+            if ext_len > 0:
+                file_ext = decrypted_data[ext_pos + 4:ext_pos + 4 + ext_len].decode()
+
             # Extract file contents
-            file_data = decrypted_data[4 + filename_len:]
+            content_pos = ext_pos + 4 + ext_len
+            file_data = decrypted_data[content_pos:]
 
             # Determine where to save the decrypted file
             if output_dir:
@@ -354,6 +508,43 @@ class SecureFileSystem:
         except Exception as e:
             print(f"Decryption error: {e}")
             return None
+
+    def create_folder(self, folder_path):
+        """Create a folder in the vault"""
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Error creating folder: {e}")
+            return False
+
+    def get_file_type(self, encrypted_path):
+        """Extract file type information from encrypted file"""
+        try:
+            with open(encrypted_path, 'rb') as file:
+                encrypted_data = file.read()
+
+            # Decrypt the data
+            decrypted_data = self.cipher.decrypt(encrypted_data)
+
+            # Extract filename length (first 4 bytes)
+            filename_len = int.from_bytes(decrypted_data[:4], byteorder='big')
+
+            # Skip filename
+            ext_pos = 4 + filename_len
+
+            # Extract extension length
+            ext_len = int.from_bytes(decrypted_data[ext_pos:ext_pos + 4], byteorder='big')
+
+            # Extract extension
+            if ext_len > 0:
+                file_ext = decrypted_data[ext_pos + 4:ext_pos + 4 + ext_len].decode()
+                return file_ext
+
+            return ""
+        except Exception as e:
+            print(f"Error getting file type: {e}")
+            return ""
 
 
 class KeyboardWatcher(QThread):
@@ -495,6 +686,69 @@ class LoginScreen(QWidget):
         self.code_pattern.setGeometry(self.rect())
 
 
+class FolderDialog(QDialog):
+    """Dialog for creating a new folder"""
+
+    def __init__(self, parent=None, current_path=""):
+        super().__init__(parent)
+        self.current_path = current_path
+        self.folder_name = ""
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setWindowTitle("CREATE NEW FOLDER")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        # Form layout
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+
+        # Folder name field
+        self.name_input = QLineEdit()
+        self.name_input.setMinimumHeight(30)
+        form_layout.addRow(QLabel("FOLDER NAME:"), self.name_input)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+
+        cancel_btn = QPushButton("CANCEL")
+        cancel_btn.clicked.connect(self.reject)
+
+        create_btn = QPushButton("CREATE")
+        create_btn.clicked.connect(self.accept_folder)
+        create_btn.setObjectName("successButton")
+
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(create_btn)
+
+        layout.addSpacing(20)
+        layout.addLayout(button_layout)
+
+    def accept_folder(self):
+        """Accept the dialog if folder name is valid"""
+        folder_name = self.name_input.text().strip()
+
+        if not folder_name:
+            QMessageBox.warning(self, "ERROR", "FOLDER NAME CANNOT BE EMPTY")
+            return
+
+        if any(c in r'\/:*?"<>|' for c in folder_name):
+            QMessageBox.warning(self, "ERROR", "FOLDER NAME CONTAINS INVALID CHARACTERS")
+            return
+
+        self.folder_name = folder_name
+        self.accept()
+
+    def get_folder_name(self):
+        """Return the folder name"""
+        return self.folder_name
+
+
 class MainScreen(QWidget):
     """Main application screen after login"""
     logout_requested = pyqtSignal()
@@ -503,6 +757,8 @@ class MainScreen(QWidget):
         super().__init__(parent)
         self.filesystem = filesystem
         self.vault_path = vault_path
+        self.current_folder = vault_path
+        self.temp_file_manager = TempFileManager()
         self.setup_ui()
         self.load_secured_files()
 
@@ -536,17 +792,23 @@ class MainScreen(QWidget):
         title_label.setContentsMargins(10, 0, 20, 0)
         toolbar.addWidget(title_label)
 
+        # Current path label
+        self.path_label = QLabel("")
+        self.path_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        toolbar.addWidget(self.path_label)
+
         # Add spacer to push menu button to the right
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Menu button
+        # Menu button (larger)
         self.menu_button = QToolButton()
         self.menu_button.setText("≡")  # More terminal-like hamburger menu
-        self.menu_button.setFont(QFont("Consolas", 12))
-        self.menu_button.setFixedSize(40, 40)
-        self.menu_button.setStyleSheet(f"color: {COLORS['primary']};")
+        self.menu_button.setFont(QFont("Consolas", 16))  # Larger font
+        self.menu_button.setFixedSize(50, 50)  # Larger button size
+        self.menu_button.setStyleSheet(f"color: {COLORS['primary']}; font-size: 16pt;")
+        self.menu_button.setToolTip("MENU")
         self.menu_button.clicked.connect(self.show_menu)
         toolbar.addWidget(self.menu_button)
 
@@ -571,6 +833,10 @@ class MainScreen(QWidget):
         add_btn.clicked.connect(self.add_files)
         button_layout.addWidget(add_btn)
 
+        new_folder_btn = QPushButton("[NEW FOLDER]")
+        new_folder_btn.clicked.connect(self.create_folder)
+        button_layout.addWidget(new_folder_btn)
+
         extract_btn = QPushButton("[EXTRACT]")
         extract_btn.clicked.connect(self.extract_files)
         button_layout.addWidget(extract_btn)
@@ -590,14 +856,18 @@ class MainScreen(QWidget):
 
         # Files table
         self.files_table = QTableWidget()
-        self.files_table.setColumnCount(3)
-        self.files_table.setHorizontalHeaderLabels(["FILENAME", "SIZE", "DATE CONSUMED"])
+        self.files_table.setColumnCount(4)  # Added a column for file type
+        self.files_table.setHorizontalHeaderLabels(["FILENAME", "TYPE", "SIZE", "DATE CONSUMED"])
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.files_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.files_table.setAlternatingRowColors(True)
         self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.files_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files_table.customContextMenuRequested.connect(self.show_context_menu)
+        self.files_table.doubleClicked.connect(self.handle_double_click)
 
         content_layout.addWidget(self.files_table, 1)  # 1 for stretch factor
 
@@ -617,6 +887,18 @@ class MainScreen(QWidget):
     def show_menu(self):
         """Show the hamburger menu"""
         menu = QMenu(self)
+
+        # Navigate up action
+        navigate_up_action = QAction("UP ONE LEVEL", self)
+        navigate_up_action.triggered.connect(self.navigate_up)
+        menu.addAction(navigate_up_action)
+
+        # Back to root action
+        root_action = QAction("ROOT FOLDER", self)
+        root_action.triggered.connect(self.navigate_to_root)
+        menu.addAction(root_action)
+
+        menu.addSeparator()
 
         # Settings action
         settings_action = QAction("SETTINGS", self)
@@ -642,22 +924,149 @@ class MainScreen(QWidget):
         """Show settings dialog"""
         QMessageBox.information(self, "SIVA SETTINGS", "Protocol configuration coming soon.")
 
+    def show_context_menu(self, position):
+        """Show context menu for files/folders"""
+        menu = QMenu(self)
+
+        selected_items = self.files_table.selectedItems()
+        if not selected_items:
+            return
+
+        # Get the row of the first selected item
+        row = selected_items[0].row()
+
+        # Get item type (file or folder)
+        item_type = self.files_table.item(row, 1).text()
+
+        if item_type == "Folder":
+            # Open folder action
+            open_action = QAction("OPEN FOLDER", self)
+            open_action.triggered.connect(lambda: self.open_folder(row))
+            menu.addAction(open_action)
+        else:
+            # Open file action
+            open_action = QAction("OPEN FILE", self)
+            open_action.triggered.connect(lambda: self.open_file(row))
+            menu.addAction(open_action)
+
+            # Extract file action
+            extract_action = QAction("EXTRACT", self)
+            extract_action.triggered.connect(lambda: self.extract_selected_file(row))
+            menu.addAction(extract_action)
+
+        menu.addSeparator()
+
+        # Delete action
+        delete_action = QAction("DELETE", self)
+        delete_action.triggered.connect(lambda: self.delete_selected_file(row))
+        menu.addAction(delete_action)
+
+        menu.exec(self.files_table.mapToGlobal(position))
+
+    def handle_double_click(self, index):
+        """Handle double click on file or folder"""
+        row = index.row()
+        item_type = self.files_table.item(row, 1).text()
+
+        if item_type == "Folder":
+            self.open_folder(row)
+        else:
+            self.open_file(row)
+
+    def open_folder(self, row):
+        """Open a folder by navigating to it"""
+        folder_name = self.files_table.item(row, 0).text()
+        new_path = os.path.join(self.current_folder, folder_name)
+        self.navigate_to_folder(new_path)
+
+    def open_file(self, row):
+        """Open a file with the system's default application"""
+        filename = self.files_table.item(row, 0).text()
+        file_path = os.path.join(self.current_folder, f"{filename}.siva")
+
+        # Get a temporary path for the file
+        temp_path = self.temp_file_manager.get_temp_path(filename)
+
+        # Decrypt the file to the temporary location
+        decrypted_path = self.filesystem.decrypt_file(file_path, os.path.dirname(temp_path))
+
+        if decrypted_path:
+            # Track the file
+            self.temp_file_manager.track_file(file_path, decrypted_path)
+
+            # Open the file
+            if self.temp_file_manager.open_file(decrypted_path):
+                self.status_bar.showMessage(f"FILE OPENED: {filename}")
+            else:
+                self.status_bar.showMessage(f"ERROR OPENING FILE: {filename}")
+        else:
+            self.status_bar.showMessage(f"ERROR DECRYPTING FILE: {filename}")
+
+    def extract_selected_file(self, row):
+        """Extract a selected file"""
+        filenames = [self.files_table.item(row, 0).text()]
+        self.extract_files(filenames)
+
+    def delete_selected_file(self, row):
+        """Delete a selected file or folder"""
+        items = [self.files_table.item(row, 0).text()]
+        self.delete_files(items)
+
+    def navigate_up(self):
+        """Navigate up one folder level"""
+        if self.current_folder == self.vault_path:
+            return  # Already at the root
+
+        parent_dir = os.path.dirname(self.current_folder)
+        self.navigate_to_folder(parent_dir)
+
+    def navigate_to_root(self):
+        """Navigate to the root folder"""
+        self.navigate_to_folder(self.vault_path)
+
+    def navigate_to_folder(self, folder_path):
+        """Navigate to a specific folder"""
+        if os.path.isdir(folder_path):
+            self.current_folder = folder_path
+            self.load_secured_files()
+
+            # Update path display
+            relative_path = os.path.relpath(folder_path, self.vault_path)
+            if relative_path == ".":
+                self.path_label.setText("/ (ROOT)")
+            else:
+                self.path_label.setText(f"/{relative_path}")
+
     def load_secured_files(self):
         """Load and display secured files in the table"""
         self.files_table.setRowCount(0)  # Clear existing items
 
-        # Find all .siva files in the hidden folder
         try:
-            vault_path = Path(self.vault_path)
-            secure_files = list(vault_path.glob("*.siva"))
+            # List all items in the current folder
+            all_items = []
 
-            if not secure_files:
-                self.status_bar.showMessage("NO INFECTED FILES DETECTED")
-                return
+            # First add folders
+            folders = [f for f in os.listdir(self.current_folder)
+                       if os.path.isdir(os.path.join(self.current_folder, f))
+                       and not f.startswith('.')]
 
-            for i, file_path in enumerate(secure_files):
-                # Get file stats
-                stats = file_path.stat()
+            for folder in folders:
+                all_items.append({
+                    'name': folder,
+                    'type': 'Folder',
+                    'size': '',
+                    'date': datetime.datetime.fromtimestamp(
+                        os.path.getmtime(os.path.join(self.current_folder, folder))
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                })
+
+            # Then add files
+            siva_files = [f for f in os.listdir(self.current_folder)
+                          if f.endswith('.siva') and os.path.isfile(os.path.join(self.current_folder, f))]
+
+            for siva_file in siva_files:
+                file_path = os.path.join(self.current_folder, siva_file)
+                stats = os.stat(file_path)
                 size_kb = stats.st_size / 1024
 
                 # Format size display
@@ -667,22 +1076,69 @@ class MainScreen(QWidget):
                     size_mb = size_kb / 1024
                     size_display = f"{size_mb:.1f} MB"
 
-                # Format date
-                date_display = datetime.datetime.fromtimestamp(stats.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                # Extract original filename (without the .siva extension)
+                filename = siva_file.replace(".siva", "")
 
-                # Extract original filename (without the path and .siva extension)
-                filename = file_path.name.replace(".siva", "")
+                # Get file type
+                file_ext = self.filesystem.get_file_type(file_path)
+                file_type = file_ext.upper() if file_ext else "Unknown"
 
-                # Add to table
+                all_items.append({
+                    'name': filename,
+                    'type': file_type,
+                    'size': size_display,
+                    'date': datetime.datetime.fromtimestamp(stats.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                })
+
+            # Display items in table
+            for i, item in enumerate(all_items):
                 row_position = self.files_table.rowCount()
                 self.files_table.insertRow(row_position)
-                self.files_table.setItem(row_position, 0, QTableWidgetItem(filename))
-                self.files_table.setItem(row_position, 1, QTableWidgetItem(size_display))
-                self.files_table.setItem(row_position, 2, QTableWidgetItem(date_display))
 
-            self.status_bar.showMessage(f"INVENTORY: {len(secure_files)} INFECTED FILE(S)")
+                # Add item data to table
+                self.files_table.setItem(row_position, 0, QTableWidgetItem(item['name']))
+                self.files_table.setItem(row_position, 1, QTableWidgetItem(item['type']))
+                self.files_table.setItem(row_position, 2, QTableWidgetItem(item['size']))
+                self.files_table.setItem(row_position, 3, QTableWidgetItem(item['date']))
+
+                # Color folders differently
+                if item['type'] == 'Folder':
+                    folder_item = self.files_table.item(row_position, 0)
+                    folder_item.setForeground(QColor(COLORS['accent']))
+
+            # Update status bar
+            total_files = len(siva_files)
+            total_folders = len(folders)
+            if total_files == 0 and total_folders == 0:
+                self.status_bar.showMessage("FOLDER EMPTY")
+            else:
+                status = []
+                if total_folders > 0:
+                    status.append(f"{total_folders} FOLDER(S)")
+                if total_files > 0:
+                    status.append(f"{total_files} FILE(S)")
+                self.status_bar.showMessage(f"INVENTORY: {', '.join(status)}")
+
         except Exception as e:
-            self.status_bar.showMessage(f"ERROR SCANNING FILES: {e}")
+            self.status_bar.showMessage(f"ERROR LOADING FILES: {e}")
+            print(f"Error loading files: {e}")
+
+    def create_folder(self):
+        """Create a new folder in the current location"""
+        dialog = FolderDialog(self, self.current_folder)
+        if dialog.exec():
+            folder_name = dialog.get_folder_name()
+            folder_path = os.path.join(self.current_folder, folder_name)
+
+            if os.path.exists(folder_path):
+                QMessageBox.warning(self, "ERROR", "FOLDER ALREADY EXISTS")
+                return
+
+            if self.filesystem.create_folder(folder_path):
+                self.status_bar.showMessage(f"FOLDER CREATED: {folder_name}")
+                self.load_secured_files()
+            else:
+                self.status_bar.showMessage("ERROR CREATING FOLDER")
 
     def add_files(self):
         """Select and add files to the secure vault"""
@@ -693,9 +1149,9 @@ class MainScreen(QWidget):
 
         successful = 0
         for filepath in filepaths:
-            # Generate destination path in the hidden folder
+            # Generate destination path in the current folder
             filename = os.path.basename(filepath)
-            dest_path = os.path.join(self.vault_path, f"{filename}.siva")
+            dest_path = os.path.join(self.current_folder, f"{filename}.siva")
 
             # Encrypt and save the file
             if self.filesystem.encrypt_file(filepath, dest_path):
@@ -709,12 +1165,26 @@ class MainScreen(QWidget):
         else:
             self.status_bar.showMessage("FAILED TO INFECT ANY FILES")
 
-    def extract_files(self):
+    def extract_files(self, selected_filenames=None):
         """Extract selected files from the vault"""
-        selected_rows = set(item.row() for item in self.files_table.selectedItems())
+        if selected_filenames is None:
+            # Get selected rows from the table
+            selected_rows = set(item.row() for item in self.files_table.selectedItems())
 
-        if not selected_rows:
-            QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES TO EXTRACT")
+            if not selected_rows:
+                QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES TO EXTRACT")
+                return
+
+            # Get filenames from selected rows
+            selected_filenames = []
+            for row in selected_rows:
+                # Check if it's a file or folder
+                item_type = self.files_table.item(row, 1).text()
+                if item_type != "Folder":  # Only extract files, not folders
+                    selected_filenames.append(self.files_table.item(row, 0).text())
+
+        if not selected_filenames:
+            QMessageBox.information(self, "NO FILES SELECTED", "NO FILES SELECTED FOR EXTRACTION")
             return
 
         # Ask for extraction directory
@@ -724,31 +1194,38 @@ class MainScreen(QWidget):
             return
 
         successful = 0
-        for row in selected_rows:
-            filename = self.files_table.item(row, 0).text()
-            encrypted_path = os.path.join(self.vault_path, f"{filename}.siva")
+        for filename in selected_filenames:
+            encrypted_path = os.path.join(self.current_folder, f"{filename}.siva")
 
             if self.filesystem.decrypt_file(encrypted_path, output_dir):
                 successful += 1
 
         if successful:
-            self.status_bar.showMessage(f"SUCCESSFULLY EXTRACTED {successful} OF {len(selected_rows)} FILE(S)")
+            self.status_bar.showMessage(f"SUCCESSFULLY EXTRACTED {successful} OF {len(selected_filenames)} FILE(S)")
             QMessageBox.information(self, "EXTRACTION COMPLETE",
                                     f"SUCCESSFULLY EXTRACTED {successful} FILE(S) TO SELECTED DIRECTORY")
         else:
             self.status_bar.showMessage("FAILED TO EXTRACT ANY FILES")
 
-    def delete_files(self):
-        """Delete selected secured files"""
-        selected_rows = set(item.row() for item in self.files_table.selectedItems())
+    def delete_files(self, selected_items=None):
+        """Delete selected secured files and folders"""
+        if selected_items is None:
+            # Get selected rows from the table
+            selected_rows = set(item.row() for item in self.files_table.selectedItems())
 
-        if not selected_rows:
-            QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES TO DELETE")
+            if not selected_rows:
+                QMessageBox.information(self, "SELECTION REQUIRED", "SELECT FILES OR FOLDERS TO DELETE")
+                return
+
+            # Get names from selected rows
+            selected_items = [self.files_table.item(row, 0).text() for row in selected_rows]
+
+        if not selected_items:
             return
 
         confirm = QMessageBox.question(
             self, "CONFIRM DELETION",
-            f"ARE YOU SURE YOU WANT TO DELETE {len(selected_rows)} FILE(S)?\nTHIS ACTION CANNOT BE UNDONE.",
+            f"ARE YOU SURE YOU WANT TO DELETE {len(selected_items)} ITEM(S)?\nTHIS ACTION CANNOT BE UNDONE.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -757,23 +1234,34 @@ class MainScreen(QWidget):
             return
 
         deleted = 0
-        for row in selected_rows:
-            filename = self.files_table.item(row, 0).text()
-            file_path = os.path.join(self.vault_path, f"{filename}.siva")
+        for item_name in selected_items:
+            file_path = os.path.join(self.current_folder, f"{item_name}.siva")
+            folder_path = os.path.join(self.current_folder, item_name)
 
             try:
-                os.remove(file_path)
-                deleted += 1
+                # Check if it's a file or folder
+                if os.path.isfile(file_path):
+                    # It's a file
+                    os.remove(file_path)
+                    deleted += 1
+                elif os.path.isdir(folder_path):
+                    # It's a folder
+                    shutil.rmtree(folder_path)
+                    deleted += 1
             except Exception as e:
-                print(f"Error deleting {file_path}: {e}")
+                print(f"Error deleting {item_name}: {e}")
 
         # Refresh the file list
         self.load_secured_files()
 
-        self.status_bar.showMessage(f"PURGED {deleted} OF {len(selected_rows)} FILE(S)")
+        self.status_bar.showMessage(f"PURGED {deleted} OF {len(selected_items)} ITEM(S)")
 
     def logout(self):
-        """Log out of the vault"""
+        """Log out of the vault and close any open files"""
+        # Close all opened temporary files
+        self.temp_file_manager.close_all()
+
+        # Signal logout
         self.logout_requested.emit()
 
 
@@ -814,6 +1302,9 @@ class SivaApplication(QMainWindow):
         self.login_screen = LoginScreen(is_new_vault=is_new_vault)
         self.login_screen.login_successful.connect(self.handle_login)
         self.main_widget.addWidget(self.login_screen)
+
+        # Main screen will be created after login
+        self.main_screen = None
 
         # Keyboard shortcut watcher
         self.keyboard_watcher = KeyboardWatcher()
@@ -904,19 +1395,23 @@ class SivaApplication(QMainWindow):
         # Create filesystem with password
         filesystem = SecureFileSystem(password)
 
-        # Create main screen if it doesn't exist
-        if self.main_widget.count() < 2:
-            self.main_screen = MainScreen(filesystem=filesystem, vault_path=self.vault_path)
-            self.main_screen.logout_requested.connect(self.logout)
-            self.main_widget.addWidget(self.main_screen)
+        # Create or recreate main screen
+        if self.main_screen:
+            # If it exists, remove it first (in case we're re-logging in)
+            self.main_widget.removeWidget(self.main_screen)
+
+        # Create a new main screen
+        self.main_screen = MainScreen(filesystem=filesystem, vault_path=self.vault_path)
+        self.main_screen.logout_requested.connect(self.logout)
+        self.main_widget.addWidget(self.main_screen)
 
         # Switch to main screen
-        self.main_widget.setCurrentIndex(1)
+        self.main_widget.setCurrentWidget(self.main_screen)
 
     def logout(self):
         """Handle logout request"""
         # Switch back to login screen
-        self.main_widget.setCurrentIndex(0)
+        self.main_widget.setCurrentWidget(self.login_screen)
 
         # Clear password field
         self.login_screen.password_field.clear()
